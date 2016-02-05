@@ -2,3 +2,6 @@
 /secrets/.boto
 .DS_Store
 *.csv
+
+.bundle/
+vendor/
