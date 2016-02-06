@@ -3,13 +3,10 @@ require 'json'
 require 'date'
 require 'csv'
 require 'yaml'
+require 'pry'
 
 CONFIG = YAML.load_file('./secrets/secrets.yml')
-
-date = Date.today-2
-file_date = date.strftime("%Y%m")
-csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
-system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
+SENTINEL_DATE_TXT = 'sentinel_date.txt'
 
 class Slack
   def self.notify(message)
@@ -23,19 +20,37 @@ class Slack
 end
 
 class Review
+  attr_accessor :version
+  attr_accessor :device
+  attr_accessor :submitted_at
+  attr_accessor :rate
+  attr_accessor :title
+  attr_accessor :text
+  attr_accessor :link
+
+  def initialize data = {}
+    @version      = data[:version] ? data[:version].to_s.encode("utf-8") : nil
+    @device       = data[:device] ? data[:device].to_s.encode("utf-8") : nil
+    @submitted_at = DateTime.parse(data[:submitted_at].encode("utf-8"))
+    @rate         = data[:rate].encode("utf-8").to_i
+    @title        = data[:title] ? "*#{data[:title].to_s.encode("utf-8")}*\n" : nil
+    @text         = data[:text] ? data[:text].to_s.encode("utf-8") : nil
+    @link         = data[:link].to_s.encode("utf-8")
+  end
+
   def self.collection
     @collection ||= []
   end
 
   def self.send_reviews_from_date(date)
-    message = collection.select do |r|
+    selected_message = collection.select do |r|
       r.submitted_at > date && (r.title || r.text)
-    end.sort_by do |r|
+    end
+    message = selected_message.sort_by do |r|
       r.submitted_at
     end.map do |r|
       r.build_message
     end.join("\n")
-
 
     if message != ""
       Slack.notify(message)
@@ -44,21 +59,6 @@ class Review
     end
   end
 
-  attr_accessor :text, :title, :submitted_at, :original_subitted_at, :rate, :device, :url, :version, :edited
-
-  def initialize data = {}
-    @text = data[:text] ? data[:text].to_s.encode("utf-8") : nil
-    @title = data[:title] ? "*#{data[:title].to_s.encode("utf-8")}*\n" : nil
-
-    @submitted_at = DateTime.parse(data[:submitted_at].encode("utf-8"))
-    @original_subitted_at = DateTime.parse(data[:original_subitted_at].encode("utf-8"))
-
-    @rate = data[:rate].encode("utf-8").to_i
-    @device = data[:device] ? data[:device].to_s.encode("utf-8") : nil
-    @url = data[:url].to_s.encode("utf-8")
-    @version = data[:version].to_s.encode("utf-8")
-    @edited = data[:edited]
-  end
 
   def notify_to_slack
     if text || title
@@ -68,38 +68,38 @@ class Review
   end
 
   def build_message
-    date = if edited
-             "subdate: #{original_subitted_at.strftime("%d.%m.%Y at %I:%M%p")}, edited at: #{submitted_at.strftime("%d.%m.%Y at %I:%M%p")}"
-           else
-             "subdate: #{submitted_at.strftime("%d.%m.%Y at %I:%M%p")}"
-           end
-
     stars = rate.times.map{"★"}.join + (5 - rate).times.map{"☆"}.join
 
     [
       "\n\n#{stars}",
-      "Version: #{version} | #{date}",
       "#{[title, text].join(" ")}",
-      "<#{url}|Ответить в Google play>"
+      "for v#{version} " " <#{link}| Google Play>",
     ].join("\n")
   end
 end
 
+#####################
+# main scripts
+#####################
+last_datetime_string = File.read(SENTINEL_DATE_TXT)
+datetime = Time.parse(last_datetime_string).to_datetime
+file_date = datetime.strftime("%Y%m")
+csv_file_name = "reviews_#{CONFIG["package_name"]}_#{file_date}.csv"
+system "BOTO_PATH=./secrets/.boto gsutil/gsutil cp -r gs://#{CONFIG["app_repo"]}/reviews/#{csv_file_name} ."
+
 CSV.foreach(csv_file_name, encoding: 'bom|utf-16le', headers: true) do |row|
-  # If there is no reply - push this review
-  if row[11].nil?
-    Review.collection << Review.new({
-      text: row[10],
-      title: row[9],
-      submitted_at: row[6],
-      edited: (row[4] != row[6]),
-      original_subitted_at: row[4],
-      rate: row[8],
-      device: row[3],
-      url: row[14],
-      version: row[1],
-    })
-  end
+  next if row[11].nil?
+  Review.collection << Review.new({
+    version: row[2],
+    device: row[4],
+    submitted_at: row[5],
+    rate: row[9],
+    title: row[10],
+    text: row[11],
+    link: row[15],
+  })
 end
 
-Review.send_reviews_from_date(date)
+Review.send_reviews_from_date(datetime)
+
+last_datetime_string = File.write(SENTINEL_DATE_TXT, Review.collection.last.submitted_at)
