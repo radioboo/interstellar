@@ -102,4 +102,4 @@ end
 
 Review.send_reviews_from_date(datetime)
 
-last_datetime_string = File.write(SENTINEL_DATE_TXT, Review.collection.last.submitted_at)
+File.write(SENTINEL_DATE_TXT, Review.collection.last.submitted_at)
